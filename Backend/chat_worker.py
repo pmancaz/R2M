@@ -1,4 +1,4 @@
-"""Local, persistent paper Q&A. Only files and bundled model weights are used."""
+"""Local, persistent paper Q&A. Uses local files and verified external model weights."""
 from pathlib import Path
 import copy
 import hashlib
@@ -11,6 +11,7 @@ import time
 from collections import Counter
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "chat-packages"))
 os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1",
                   TOKENIZERS_PARALLELISM="false")
@@ -79,14 +80,88 @@ def select_passages(blocks, query, tokenizer, budget=16000):
     return sorted(picked), "Relevant passages from a long document"
 
 
+def visible_answer(raw):
+    """Hide complete/incomplete reasoning tags, including tags split across chunks."""
+    visible, position = [], 0
+    while True:
+        start = raw.find("<think>", position)
+        if start < 0:
+            visible.append(raw[position:])
+            break
+        visible.append(raw[position:start])
+        end = raw.find("</think>", start + len("<think>"))
+        if end < 0:
+            break
+        position = end + len("</think>")
+    answer = "".join(visible).replace("</think>", "")
+    # A partial opening tag must not briefly expose the beginning of scratch work.
+    for tag in ("<think>", "</think>"):
+        length = max((n for n in range(1, len(tag)) if answer.endswith(tag[:n])), default=0)
+        if length:
+            answer = answer[:-length]
+    return answer.strip()
+
+
+def generate_answer(make_stream, thinking, update, reasoning_budget=640, answer_budget=1700, closing_token=None):
+    """Return only final prose; an unfinished reasoning pass is discarded entirely.
+
+    Each make_stream call must use the original conversation and a fresh copy of
+    the immutable paper-prefix cache. Never seed the fallback with scratch text.
+    """
+    for reasoning in ((True, False) if thinking else (False,)):
+        raw, answer, latest = "", "", None
+        closing_at = None
+        limited = False
+        last_update = 0.0
+        update("Thinking…" if reasoning else "Answering…", "")
+        stream = make_stream(reasoning)
+        try:
+            for number, item in enumerate(stream, 1):
+                latest = item
+                raw += item.text
+                count = getattr(item, "generation_tokens", number)
+                if reasoning:
+                    if closing_at is None and ("</think>" in raw or
+                            (closing_token is not None and getattr(item, "token", None) == closing_token)):
+                        closing_at = count
+                    answer = visible_answer(raw.split("</think>", 1)[1]) if "</think>" in raw else ""
+                    if closing_at is None and count >= reasoning_budget:
+                        # Do not force a closing token into an unfinished plan.
+                        # Close this stream before making a clean nonthinking pass.
+                        break
+                    used_answer_tokens = count - closing_at if closing_at is not None else 0
+                else:
+                    answer = visible_answer(raw)
+                    used_answer_tokens = count
+                if time.monotonic() - last_update > 0.15:
+                    update("Answering…" if answer else "Thinking…", answer)
+                    last_update = time.monotonic()
+                if used_answer_tokens >= answer_budget:
+                    limited = getattr(item, "finish_reason", None) != "stop"
+                    break
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
+        if reasoning and (closing_at is None or not answer):
+            # Drop raw, latest and the mutated generation cache. Only the original
+            # paper/question/history are used by make_stream(False).
+            continue
+        if answer:
+            return answer, latest, limited
+    raise ValueError("The model did not finish its answer. Try a narrower question.")
+
+
 class Engine:
     def __init__(self):
+        from model_paths import model_dir
+        installed = model_dir("chat")
         import mlx.core as mx
         from mlx_lm import load
         self.mx = mx
         # Keep headroom for macOS, speech synthesis, and the prompt cache.
         mx.set_cache_limit(512 * 1024**2)
-        self.model, self.tokenizer = load(ROOT / "chat-model",
+        self.model, self.tokenizer = load(installed,
                                         tokenizer_config={"local_files_only":True, "trust_remote_code":False})
         self.prefix_key = None
         self.prefix_cache = None
@@ -131,48 +206,29 @@ class Engine:
             if used+count>3500:break
             history.insert(0,{"role":message["role"],"content":message["content"]});used+=count
         thinking = data.get("thinking",True)
-        prompt = tokenizer.apply_chat_template([{"role":"system","content":system},*history,{"role":"user","content":question}],
-                                               tokenize=True,add_generation_prompt=True,enable_thinking=thinking)
-        if prompt[:len(prefix)] != prefix:
-            raise ValueError("The model's paper context could not be prepared.")
-        cache=copy.deepcopy(self.prefix_cache)
-        raw = ""
-        last_update = 0.0
-        first_length = None
-        closing_ids = tokenizer.encode("</think>",add_special_tokens=False)
-        def budget(tokens,logits):
-            nonlocal first_length
-            if first_length is None:first_length=len(tokens)
-            generated=tokens[first_length:]
-            if thinking and len(generated)>=640 and len(closing_ids)==1 and closing_ids[0] not in generated.tolist():
-                forced=mx.full(logits.shape,-float("inf"))
-                forced[...,closing_ids[0]]=0
-                return forced
-            return logits
-        update("Thinking…" if thinking else "Answering…","",None,context_mode)
-        latest=None
-        for item in stream_generate(self.model,tokenizer,prompt[len(prefix):],max_tokens=1700,
-                                    prompt_cache=cache,prefill_step_size=256,
-                                    sampler=make_sampler(temp=0.6 if thinking else 0.3,top_p=0.95,top_k=20),
-                                    logits_processors=[budget]):
-            raw += item.text
-            if thinking:
-                answer = raw.split("</think>",1)[1].lstrip() if "</think>" in raw else ""
-            else:
-                answer = re.sub(r"<think>.*?</think>","",raw,flags=re.S).strip()
-            latest = item
-            if time.monotonic()-last_update>0.15:
-                update("Answering…" if answer else "Thinking…",answer,None,context_mode)
-                last_update=time.monotonic()
-        answer = (raw.split("</think>",1)[1].strip() if "</think>" in raw else ("" if thinking else raw.strip()))
-        if not answer:
-            raise ValueError("The model did not finish its answer. Try turning off Deeper reasoning or ask a narrower question.")
+        messages = [{"role":"system","content":system},*history,{"role":"user","content":question}]
+        def make_stream(reasoning):
+            prompt = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
+                                                   enable_thinking=reasoning)
+            if prompt[:len(prefix)] != prefix:
+                raise ValueError("The model's paper context could not be prepared.")
+            # The first pass may have stopped in the middle of private reasoning.
+            # Reuse only the immutable paper prefix, never that pass's live cache.
+            cache = copy.deepcopy(self.prefix_cache)
+            return stream_generate(self.model, tokenizer, prompt[len(prefix):],
+                                   max_tokens=1700 + (640 if reasoning else 0),
+                                   prompt_cache=cache, prefill_step_size=256,
+                                   sampler=make_sampler(temp=0.6 if reasoning else 0.3, top_p=0.95, top_k=20))
+        closing_ids = tokenizer.encode("</think>", add_special_tokens=False)
+        answer, latest, limited = generate_answer(
+            make_stream, thinking, lambda status, text: update(status, text, None, context_mode),
+            closing_token=closing_ids[0] if len(closing_ids) == 1 else None)
         # References in the UI always come from the actual supplied text.
         cited=sorted(set(int(n)-1 for n in re.findall(r"\[P(\d+)\]",answer)))
         sources=[dict(number=i+1,text=blocks[i]) for i in cited if i in selected]
         invalid = any(i not in selected for i in cited)
         answer = re.sub(r"\[P(\d+)\]", lambda m:m[0] if int(m[1])-1 in selected else "",answer)
-        notice = "Response length limit reached. You can ask it to continue." if latest and latest.finish_reason=="length" else ""
+        notice = "Response length limit reached. You can ask it to continue." if limited or (latest and latest.finish_reason=="length") else ""
         if invalid: notice = "One source reference could not be matched to the paper."
         update("Ready",answer,None,context_mode)
         return dict(answer=answer,sources=sources,context=context_mode,notice=notice)

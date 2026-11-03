@@ -34,11 +34,16 @@ final class Studio: ObservableObject {
     private var playTimer: Timer?
     private let fm = FileManager.default
     private let session = FileManager.default.temporaryDirectory.appendingPathComponent("Kokoro-" + UUID().uuidString)
-    private let draftFile = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Kokoro Reader/Current Draft.json")
+    private let draftFile = R2MPaths.dataDirectory.appendingPathComponent("Current Draft.json")
 
     init() {
-        if let saved = try? Data(contentsOf: draftFile), let value = try? JSONDecoder().decode(Draft.self, from: saved) {
+        var savedFile = draftFile
+        if !fm.fileExists(atPath: savedFile.path), ProcessInfo.processInfo.environment["R2M_DATA_DIR"] == nil {
+            let legacy = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Kokoro Reader/Current Draft.json")
+            if fm.fileExists(atPath: legacy.path) { savedFile = legacy }
+        }
+        if let saved = try? Data(contentsOf: savedFile), let value = try? JSONDecoder().decode(Draft.self, from: saved) {
             draft = value
         }
         refreshPlan()
@@ -144,6 +149,9 @@ final class Studio: ObservableObject {
             task.executableURL = resources.appendingPathComponent("runtime/bin/python3.11")
             task.arguments = ["-I", "-B", resources.appendingPathComponent("reader.py").path, folder.path]
             task.currentDirectoryURL = folder
+            var environment = ProcessInfo.processInfo.environment
+            environment["R2M_MODEL_DIR"] = R2MPaths.modelsDirectory.path
+            task.environment = environment
             let log = folder.appendingPathComponent("engine.log")
             fm.createFile(atPath: log.path, contents: nil)
             let file = try FileHandle(forWritingTo: log)
@@ -372,6 +380,7 @@ final class Studio: ObservableObject {
 }
 
 struct ReaderView: View {
+    @EnvironmentObject private var models: LocalModels
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var studio: Studio
     @AppStorage("voice") var voice = "af_heart"
@@ -396,8 +405,13 @@ struct ReaderView: View {
                         .foregroundStyle(.white).frame(width: 44, height: 44).background(R2MTheme.actionAccent, in: RoundedRectangle(cornerRadius: 12))
                     Text("R2M").font(.system(size: 22, weight: .semibold))
                     Spacer()
-                    Button { openWindow(id: "paper-chat") } label: { Label("Chat", systemImage: "text.bubble") }
-                        .disabled(studio.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button { models.present(.setup) } label: { Label("Models", systemImage: "arrow.down.circle") }
+                        .disabled(studio.busy)
+                    Button {
+                        if models.has("chat") { openWindow(id: "paper-chat") }
+                        else { models.present(.chat) }
+                    } label: { Label("Chat", systemImage: "text.bubble") }
+                        .disabled(models.has("chat") && studio.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button { studio.pickPDF() } label: { Label("Import PDF", systemImage: "doc.badge.plus") }
                         .keyboardShortcut("o").disabled(studio.busy)
                     Button { link = ""; showLink = true } label: { Label("Website link", systemImage: "link") }
@@ -535,7 +549,10 @@ struct ReaderView: View {
                                 .accessibilityValue(String(format: "%.2f times", speed))
                         }.frame(width: 144).disabled(studio.busy)
                         Spacer()
-                        Button { studio.generate(voice: voice, speed: speed) } label: { Label("Generate speech", systemImage: "waveform") }
+                        Button {
+                            if models.has("speech") { studio.generate(voice: voice, speed: speed) }
+                            else { models.present(.speech) }
+                        } label: { Label("Generate speech", systemImage: "waveform") }
                             .r2mPrimaryAction().tint(accent).controlSize(compact ? .regular : .large)
                             .disabled(studio.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || studio.busy)
                             .keyboardShortcut(.return, modifiers: [.command])
@@ -580,7 +597,17 @@ struct ReaderView: View {
         }
         .frame(minWidth: 660, minHeight: 490)
         .onAppear {
+            models.firstLaunch()
             if studio.draft.isPaper && studio.draft.plan == nil && !studio.draft.text.isEmpty { studio.prepare() }
+        }
+        .sheet(item: $models.prompt) { prompt in
+            ModelSetupView(models: models, reason: prompt)
+        }
+        .onChange(of: models.installed) { before, after in
+            if !before.contains("cleanup"), after.contains("cleanup"), studio.draft.isPaper, !studio.busy {
+                studio.discardAudio()
+                studio.prepare()
+            }
         }
         .sheet(isPresented: $review) {
             VStack(alignment: .leading, spacing: 12) {
@@ -620,7 +647,7 @@ struct ReaderView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: action)
         }
         .onOpenURL { url in studio.importPDF(url) }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in studio.shutdown() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in studio.shutdown(); models.cancel() }
     }
 }
 struct TranscriptView: NSViewRepresentable {
@@ -647,12 +674,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var studio = Studio()
     @StateObject private var chat = PaperChat()
+    @StateObject private var models = LocalModels()
     var body: some Scene {
-        Window("R2M", id: "studio") { ReaderView(studio: studio) }
+        Window("R2M", id: "studio") { ReaderView(studio: studio).environmentObject(models) }
             .defaultSize(width: 850, height: 660)
             .windowResizability(.contentMinSize)
-        Window("Chat with this paper", id: "paper-chat") { PaperChatView(chat: chat, studio: studio) }
+        Window("Chat with this paper", id: "paper-chat") {
+            Group {
+                if models.has("chat") { PaperChatView(chat: chat, studio: studio) }
+                else { ModelSetupView(models: models, reason: .chat).onAppear { models.selected = ["chat"] } }
+            }
+        }
             .defaultSize(width: 680, height: 740)
             .windowResizability(.contentMinSize)
+            .commands {
+                CommandGroup(after: .appSettings) {
+                    Button("Manage Models…") { models.present(.setup) }
+                }
+            }
     }
 }

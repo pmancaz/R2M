@@ -8,6 +8,7 @@ import traceback
 from urllib.parse import urlsplit, unquote
 
 RESOURCES = Path(__file__).resolve().parent
+sys.path.insert(0, str(RESOURCES))
 VOICES = ("af_heart", "af_bella", "am_michael", "bf_emma", "bm_george")
 os.environ.update(HF_HUB_OFFLINE="1", HF_HUB_DISABLE_TELEMETRY="1",
                   PYTORCH_ENABLE_MPS_FALLBACK="1", TOKENIZERS_PARALLELISM="false")
@@ -125,6 +126,8 @@ def read_link(value, progress):
 
 
 def speak(data, folder, progress):
+    from model_paths import model_dir as installed_model_dir
+    model_dir = installed_model_dir("speech")
     import torch
     import soundfile as sf
     import espeakng_loader
@@ -133,7 +136,6 @@ def speak(data, folder, progress):
     os.chdir(espeakng_loader.get_data_path())
     os.environ["ESPEAK_DATA_PATH"] = "."
     from kokoro import KPipeline, KModel
-    model_dir = RESOURCES / "model"
     voice = data["voice"]
     if voice not in VOICES:
         raise ValueError("Select one of the installed voices.")
@@ -168,7 +170,8 @@ def export_mp3(data, folder, progress):
 def prepare(data, progress):
     from paper import make_plan
     progress("Preparing listening text…")
-    return make_plan(data["text"], data.get("title",""), RESOURCES / "classifier", progress, data.get("roles"))
+    from model_paths import optional_model_dir
+    return make_plan(data["text"], data.get("title",""), optional_model_dir("cleanup"), progress, data.get("roles"))
 
 
 def main():

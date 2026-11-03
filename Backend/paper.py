@@ -32,6 +32,10 @@ def span(start, stop, raw, reason, group="cleanup", replacement=""):
 def classify(candidates, model_dir):
     if not candidates:
         return {}
+    if model_dir is None:
+        # Without the optional classifier, preserve uncertain author text.
+        # Unambiguous formatting/citation/service rules still apply below.
+        return {i: (0.0, 1.0) for i, _ in candidates}
     import torch
     from tokenizers import Tokenizer
     from transformers import AutoModelForSequenceClassification
@@ -205,7 +209,7 @@ def make_plan(text,title,model_dir,progress,roles=None):
         if len(s)<500 and (i in front or roles[i] in ('page-header','page-footer') or re.match(r'(?i)^(click here|subscriptions?\s*:|reprints?\s*:|downloaded from)',s)):
             if (i in front and 3<=len(s.split())<=55) or SERVICE.search(s) or re.search(r'(?i)^(vis(it|iting)|register|access|view|sign|receive|order|request|learn more|for more|for details|log in|read more)\b',s):
                 candidates.append((i,s))
-    if candidates:
+    if candidates and model_dir is not None:
         progress("Checking publisher notices with DeBERTa…")
     scores=classify(candidates,model_dir)
     for i,s in candidates:
@@ -247,4 +251,4 @@ def make_plan(text,title,model_dir,progress,roles=None):
     # spoken label only when both the synopsis and subsequent numbered introduction are present.
     if boundary+1<len(raw) and re.match(r"(?i)^(this (paper|article|study)|we (present|investigate))\b",raw[boundary]) and re.fullmatch(r"(?i)(?:1[.)]?\s+)?introduction",raw[boundary+1]):
         units[boundary]['label']="Abstract"
-    return dict(units=units,classifierCount=len(candidates))
+    return dict(units=units,classifierCount=len(candidates) if model_dir is not None else 0)

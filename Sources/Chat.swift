@@ -30,7 +30,7 @@ final class PaperChat: ObservableObject {
     private var job: URL?
     private let fm = FileManager.default
     private let session = FileManager.default.temporaryDirectory.appendingPathComponent("Kokoro-Chat-" + UUID().uuidString)
-    private let library = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kokoro Reader/Chats")
+    private let library = R2MPaths.dataDirectory.appendingPathComponent("Chats")
 
     func bind(title: String, source: String) {
         let digest = SHA256.hash(data: Data((title + "\n" + source).utf8)).map { String(format: "%02x", $0) }.joined()
@@ -61,6 +61,9 @@ final class PaperChat: ObservableObject {
         task.executableURL = resources.appendingPathComponent("runtime/bin/python3.11")
         task.arguments = ["-I", "-B", resources.appendingPathComponent("chat_worker.py").path]
         task.currentDirectoryURL = session
+        var environment = ProcessInfo.processInfo.environment
+        environment["R2M_MODEL_DIR"] = R2MPaths.modelsDirectory.path
+        task.environment = environment
         task.standardInput = pipe
         let log = session.appendingPathComponent("chat.log")
         fm.createFile(atPath: log.path, contents: nil)

@@ -1,5 +1,5 @@
 from pathlib import Path
-import plistlib, subprocess, json
+import plistlib, subprocess, json, shutil, os
 root=Path(__file__).resolve().parent.parent
 work=root/'work/polish'
 source=work/'preview-sources'
@@ -21,11 +21,25 @@ for item in (root/'Sources').glob('*.swift'):
         for view in ['ReaderView(studio: studio)', 'PaperChatView(chat: chat, studio: studio)']:
             text=text.replace(view+' }', view+'.preferredColorScheme(CommandLine.arguments.contains("--dark") ? .dark : .light) }')
     (source/item.name).write_text(text)
+base = root/'outputs/R2M.app'
+if not (base/'Contents/Resources/runtime').is_dir():
+    raise SystemExit('Build the standalone runtime first: python3 Scripts/build.py')
 bundle=work/'R2M.app'
 (bundle/'Contents/MacOS').mkdir(parents=True,exist_ok=True)
 resource=bundle/'Contents/Resources'
-if not resource.exists(): resource.symlink_to('/Applications/Kokoro.app/Contents/Resources')
-info=plistlib.loads(Path('/Applications/Kokoro.app/Contents/Info.plist').read_bytes())
+if resource.is_symlink():
+    resource.unlink()
+resource.mkdir(parents=True, exist_ok=True)
+for name in ('runtime', 'chat-packages', 'bin', 'previews', 'R2M.icns'):
+    target = resource/name
+    if target.is_symlink(): target.unlink()
+    if not target.exists():
+        target.symlink_to(os.path.relpath(base/'Contents/Resources'/name, resource))
+for item in (root/'Backend').glob('*.py'):
+    shutil.copy2(item, resource/item.name)
+shutil.copytree(root/'Resources', resource, dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+info=plistlib.loads((base/'Contents/Info.plist').read_bytes())
 info.update(CFBundleIdentifier='local.narrator.polish-preview', CFBundleDisplayName='R2M',
             CFBundleName='R2M', CFBundleExecutable='R2M',
             NSHumanReadableCopyright='R2M')
