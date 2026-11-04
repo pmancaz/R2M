@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from runtime_support import mlx_overlay, sha256
+from runtime_support import install_network_runtime, mlx_overlay, sha256
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT = Path('/Applications/Kokoro.app/Contents/Resources')
@@ -134,6 +134,16 @@ def main():
     print('Copying bundled runtime assets (model weights excluded)…', flush=True)
     for name in ASSETS:
         shutil.copytree(inputs/name, resources/name, symlinks=True, ignore=ignore_scratch)
+    install_network_runtime(ROOT, resources)
+    # Check the download worker's isolated Python, not the separate chat path.
+    # This must fail the build if the native trust dependency is missing or broken.
+    network_versions = {item['name']: item['version'] for item in
+                        json.loads((ROOT/'Resources/network-runtime.json').read_text())}
+    run([resources/'runtime/bin/python3.11', '-I', '-B', '-c',
+         'import importlib.metadata, ssl, truststore; '
+         f'assert importlib.metadata.version("truststore") == {network_versions["truststore"]!r}; '
+         'context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT); '
+         'assert context.check_hostname and context.verify_mode == ssl.CERT_REQUIRED'])
     if not args.chat_overlay:
         args.chat_overlay = mlx_overlay(ROOT)
     if args.chat_overlay:
@@ -181,7 +191,7 @@ def main():
     info = {
         'CFBundleName': 'R2M', 'CFBundleDisplayName': 'R2M', 'CFBundleExecutable': 'R2M',
         'CFBundleIdentifier': 'local.r2m.reader', 'CFBundlePackageType': 'APPL',
-        'CFBundleShortVersionString': '3.1', 'CFBundleVersion': '8',
+        'CFBundleShortVersionString': '3.1.1', 'CFBundleVersion': '9',
         'CFBundleIconFile': 'R2M.icns', 'LSMinimumSystemVersion': '14.0',
         'R2MChatMinimumSystemVersion': args.chat_minimum,
         'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication',

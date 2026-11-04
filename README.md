@@ -6,6 +6,8 @@ R2M (“read2me”) is a native macOS app for local speech, article import and p
 
 Unzip `outputs/R2M-staff.zip` and copy `R2M.app` to Applications. The app includes its Python runtime, libraries, FFmpeg and voice previews. It runs independently: no Python, Homebrew, Kokoro installation, account or API key is required on the recipient's Mac.
 
+To update an existing installation, quit R2M and replace the app in Applications with the new copy. Your downloaded models, partially completed downloads, saved reading and chat data remain in Application Support; there is no need to remove them. In version 3.1.1, model downloads use macOS certificate verification, including trusted certificates managed by your IT team, rather than depending on Python's static certificate bundle. Certificate and hostname verification remain enabled.
+
 The staff archive is **ad-hoc signed, not Developer ID signed or Apple notarized**. If macOS blocks the test build, the recipient must use Finder's Open action or the system's Privacy & Security Open Anyway control themselves. R2M does not remove quarantine attributes or change security settings. Developer ID signing and notarization remain release work.
 
 Open the Models window in R2M to install only the model sets you need:
@@ -36,7 +38,7 @@ For this checkout, the build reads already prepared runtime inputs from `/Applic
 python3 Scripts/build.py --runtime-source /path/to/runtime-inputs --zip
 ```
 
-That directory must contain `runtime/` (relocatable Python 3.11 and speech/PDF packages), `chat-packages/` (MLX-LM and tokenizer dependencies), `bin/`, `previews/` and `Kokoro.icns` (or `R2M.icns`). An existing R2M app's `Contents/Resources` directory can itself supply these inputs, so recipients can rebuild from the included source and app without installing Kokoro. The build copies these assets into the app, retains package metadata and license notices, overlays the official macOS 14 MLX wheels pinned in `Resources/chat-runtime.json`, and compiles the Swift sources with the macOS 14 arm64 deployment target. The wheel downloads are verified against pinned SHA256 digests. Large runtime assets and weights are excluded from Git.
+That directory must contain `runtime/` (relocatable Python 3.11 and speech/PDF packages), `chat-packages/` (MLX-LM and tokenizer dependencies), `bin/`, `previews/` and `Kokoro.icns` (or `R2M.icns`). An existing R2M app's `Contents/Resources` directory can itself supply these inputs, so recipients can rebuild from the included source and app without installing Kokoro. The build copies these assets into the app, retains package metadata and license notices, overlays the official macOS 14 MLX wheels pinned in `Resources/chat-runtime.json`, and compiles the Swift sources with the macOS 14 arm64 deployment target. It also installs the small pure-Python `truststore` wheel pinned in `Resources/network-runtime.json` into the main runtime, and checks that the isolated download worker can import it and create a verifying TLS context. All wheel downloads are verified against pinned SHA256 digests. Large runtime assets and weights are excluded from Git.
 
 The builder omits unused Tkinter/IDLE (their Tcl/Tk runtime is not included), removes unused eSpeak CI build-machine RPATHs from bundle copies, checks for external symlinks and native-library paths, and ad-hoc signs the copied native binaries and the app. The installed build inputs are never modified.
 
@@ -57,6 +59,7 @@ The preview keeps the existing development defaults domain (`local.narrator.poli
 - `Backend/`: model installer, speech/extraction, PDF cleanup, loudness normalization and local chat workers.
 - `Resources/models.json`: pinned model downloads, sizes, digests and license references.
 - `Resources/chat-runtime.json`: verified macOS 14 MLX runtime wheel inputs.
+- `Resources/network-runtime.json`: verified native certificate-verification runtime wheel input.
 - `Resources/THIRD_PARTY_NOTICES.md` and `Resources/Licenses/`: runtime notices and source references.
 - `Scripts/`: standalone app and development-preview builders.
 - `Tests/`: focused source-location regression checks.

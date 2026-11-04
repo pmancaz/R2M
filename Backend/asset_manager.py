@@ -1,4 +1,4 @@
-"""Pinned, resumable model downloads. No third-party Python packages are required."""
+"""Pinned, resumable model downloads using the Mac's native certificate trust."""
 from pathlib import Path
 import errno
 import fcntl
@@ -53,15 +53,29 @@ class SecureRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def verified_tls_context():
+    if sys.platform == "darwin":
+        # OpenSSL's default PEM files and certifi do not include certificates
+        # managed by IT in the macOS Keychain. Let Security.framework evaluate
+        # the server chain and hostname, including the Mac's trust settings.
+        # Do not add certifi anchors here: macOS must also honour system distrust.
+        try:
+            import truststore
+        except ImportError as exc:
+            raise RuntimeError("R2M's secure download component is missing. Replace the app with a fresh copy of R2M; your models and documents will be kept.") from exc
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context = ssl.create_default_context()
-    # The standalone runtime includes certifi for requests. Supplement system roots
-    # using its PEM file when present; the downloader itself still needs only stdlib.
+    # Retain portable source/test support outside macOS.
     purelib = sysconfig.get_path("purelib")
     if purelib:
         bundled_roots = Path(purelib) / "certifi/cacert.pem"
         if bundled_roots.is_file():
             context.load_verify_locations(cafile=str(bundled_roots))
     return context
+
+
+def certificate_error(exc):
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return reason if isinstance(reason, ssl.SSLCertVerificationError) else None
 
 
 class Installer:
@@ -153,6 +167,15 @@ class Installer:
                 self.update("Verified " + label)
                 return
             except (OSError, ValueError, http.client.HTTPException) as exc:
+                if certificate_error(exc) is not None:
+                    # Retrying a rejected certificate cannot repair the trust chain.
+                    # Preserve partial files and keep the failure actionable.
+                    raise RuntimeError(
+                        f"Could not verify the secure connection for {label}. "
+                        "Check this Mac's date and time. If you use a workplace network or VPN, "
+                        "ask IT to check its trusted certificates, or try another network. "
+                        f"Details: {certificate_error(exc)}"
+                    ) from exc
                 if isinstance(exc, urllib.error.HTTPError) and exc.code == 416:
                     partial.unlink(missing_ok=True)
                 if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:

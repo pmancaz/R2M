@@ -26,6 +26,12 @@ files remain inside each package and `.dist-info` directory.
 - **spaCy English language data**: `en_core_web_sm` 3.8.0, MIT. This small linguistic
   resource is part of the speech runtime, separate from the optional neural
   models downloaded by R2M. Source: https://github.com/explosion/spacy-models
+- **truststore 0.10.5**: MIT. Model downloads use its macOS Security framework
+  integration to verify server certificates against the native trust store,
+  including IT-managed certificates. The original license is retained in
+  `runtime/lib/python3.11/site-packages/truststore-0.10.5.dist-info/licenses/LICENSE`.
+  Its official wheel URL and SHA256 digest are pinned in `network-runtime.json`.
+  Source: https://github.com/sethmlarson/truststore
 
 ## Copyleft components and source locations
 
