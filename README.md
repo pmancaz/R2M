@@ -10,6 +10,10 @@ This is a personal project, and I'm sharing it because I find it useful. It isn'
 
 [Project page](https://pcarroll.au/tools/read-to-me/) · [Installation](#installation) · [Models and acknowledgements](#models-and-acknowledgements) · [Report a problem](https://github.com/pmancaz/R2M/issues)
 
+<img src="docs/images/read-to-me-reader.jpg" width="850" alt="Read To Me showing an example article, voice and speed controls, and a generated narration ready to play or export as MP3.">
+
+*The reader, with an example article and a narration ready to take with me.*
+
 ## What it does
 
 - Imports searchable PDFs, website articles or pasted text.
@@ -25,6 +29,10 @@ The app uses SwiftUI/AppKit for its interface and Python workers for extraction,
 A PDF contains rather more than the words I want to hear. Page numbers, repeated headers, publisher notices and long reference lists all make sense on a page, but can get in the way when read aloud.
 
 Read To Me extracts the text, then uses formatting rules and an optional DeBERTa classifier to identify material to leave out. It builds a reversible listening plan so I can inspect what changed. This step preserves the author's wording; the classifier scores passages rather than writing new prose. Website extraction uses Trafilatura to separate article text from the surrounding page, while PDF cleanup controls apply to imported papers.
+
+<img src="docs/images/read-to-me-review.jpg" width="560" alt="Read To Me's Listening changes window, with individual controls for a publisher notice, an in-text citation and bibliography entries.">
+
+*I can check what has been left out and restore individual changes before listening.*
 
 The resulting text goes to Kokoro, which produces the speech locally. FFmpeg normalises the audio's loudness and encodes the exported MP3. The optional Qwen paper-chat model is a separate part of the app; it doesn't rewrite the text used for narration.
 
