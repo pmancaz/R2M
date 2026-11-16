@@ -35,6 +35,9 @@ final class Studio: ObservableObject {
     private let fm = FileManager.default
     private let session = FileManager.default.temporaryDirectory.appendingPathComponent("Kokoro-" + UUID().uuidString)
     private let draftFile = R2MPaths.dataDirectory.appendingPathComponent("Current Draft.json")
+    private let draftStore = DraftStore(file: R2MPaths.dataDirectory.appendingPathComponent("Current Draft.json"))
+    private(set) var draftSaveError: String?
+    private var draftSaveFailureReported = false
 
     init() {
         var savedFile = draftFile
@@ -43,8 +46,10 @@ final class Studio: ObservableObject {
                 .appendingPathComponent("Kokoro Reader/Current Draft.json")
             if fm.fileExists(atPath: legacy.path) { savedFile = legacy }
         }
-        if let saved = try? Data(contentsOf: savedFile), let value = try? JSONDecoder().decode(Draft.self, from: saved) {
-            draft = value
+        do {
+            if let value = try draftStore.load(from: savedFile) { draft = value }
+        } catch {
+            problem = "The saved text could not be opened. Its original file will be kept for recovery. You can paste or import text to continue. " + error.localizedDescription
         }
         refreshPlan()
         // The updater can hand off an already-generated recording before restarting.
@@ -100,13 +105,26 @@ final class Studio: ObservableObject {
         if let roles = draft.roles { input["roles"] = roles }
         run(input, initial: "Preparing listening text…")
     }
-    func saveDraft() {
+    @discardableResult
+    func saveDraft(reportFailure: Bool = true) -> Bool {
         do {
-            try fm.createDirectory(at: draftFile.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(draft).write(to: draftFile, options: .atomic)
+            try draftStore.save(draft)
+            draftSaveError = nil
+            draftSaveFailureReported = false
+            return true
         } catch {
-            NSLog("Could not save current draft: %@", error.localizedDescription)
+            draftSaveError = "Your text could not be saved. Keep R2M open and copy your text somewhere safe before closing. " + error.localizedDescription
+            if reportFailure && !draftSaveFailureReported {
+                problem = draftSaveError
+                draftSaveFailureReported = true
+            }
+            return false
         }
+    }
+    func acknowledgeDraftSaveError() {
+        guard let draftSaveError else { return }
+        draftSaveFailureReported = true
+        if problem == draftSaveError { problem = nil }
     }
 
     func pickPDF() {
@@ -347,9 +365,7 @@ final class Studio: ObservableObject {
             problem = "The export folder is unavailable. Choose an export folder and try again."
             return
         }
-        let name = audioTitle.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let destination = directory.appendingPathComponent(String((name.isEmpty ? "Narration" : name).prefix(100)) + ".mp3")
+        let destination = directory.appendingPathComponent(AudioExport.filename(for: audioTitle))
         exportedURL = nil
         exportDestination = destination
         run(["kind": "mp3", "source": audioURL.path], initial: "Exporting MP3…")
@@ -381,6 +397,7 @@ final class Studio: ObservableObject {
 
 struct ReaderView: View {
     @EnvironmentObject private var models: LocalModels
+    @EnvironmentObject private var appDelegate: AppDelegate
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var studio: Studio
     @AppStorage("voice") var voice = "af_heart"
@@ -597,6 +614,8 @@ struct ReaderView: View {
         }
         .frame(minWidth: 660, minHeight: 490)
         .onAppear {
+            appDelegate.studio = studio
+            appDelegate.reopenStudio = { openWindow(id: "studio") }
             models.firstLaunch()
             if studio.draft.isPaper && studio.draft.plan == nil && !studio.draft.text.isEmpty { studio.prepare() }
         }
@@ -667,8 +686,32 @@ struct TranscriptView: NSViewRepresentable {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    weak var studio: Studio?
+    var reopenStudio: (() -> Void)?
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let studio, !studio.saveDraft(reportFailure: false) else { return .terminateNow }
+        // This native confirmation reports the current save failure. A pending
+        // autosave may run inside its modal loop; it must not open a second alert.
+        studio.acknowledgeDraftSaveError()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Your text could not be saved"
+        alert.informativeText = studio.draftSaveError ?? "Copy your text somewhere safe before quitting R2M."
+        alert.addButton(withTitle: "Keep Open")
+        alert.addButton(withTitle: "Quit Without Saving")
+        if alert.runModal() == .alertFirstButtonReturn {
+            // Closing the last window may have initiated termination. Reopen its
+            // SwiftUI scene after cancelling so the user can recover their text.
+            DispatchQueue.main.async { [weak self] in
+                self?.reopenStudio?()
+                sender.activate(ignoringOtherApps: true)
+            }
+            return .terminateCancel
+        }
+        return .terminateNow
+    }
 }
 @main struct R2MDesktop: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -676,7 +719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @StateObject private var chat = PaperChat()
     @StateObject private var models = LocalModels()
     var body: some Scene {
-        Window("R2M", id: "studio") { ReaderView(studio: studio).environmentObject(models) }
+        Window("R2M", id: "studio") { ReaderView(studio: studio).environmentObject(models).environmentObject(delegate) }
             .defaultSize(width: 850, height: 660)
             .windowResizability(.contentMinSize)
         Window("Chat with this paper", id: "paper-chat") {
@@ -689,7 +732,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .windowResizability(.contentMinSize)
             .commands {
                 CommandGroup(after: .appSettings) {
-                    Button("Manage Models…") { models.present(.setup) }
+                    Button("Manage Models…") {
+                        delegate.reopenStudio?()
+                        models.present(.setup)
+                    }.disabled(studio.busy)
                 }
             }
     }

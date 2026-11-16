@@ -28,29 +28,61 @@ final class PaperChat: ObservableObject {
     private var input: FileHandle?
     private var timer: Timer?
     private var job: URL?
+    private var unreadableHistoryURL: URL?
     private let fm = FileManager.default
     private let session = FileManager.default.temporaryDirectory.appendingPathComponent("Kokoro-Chat-" + UUID().uuidString)
     private let library = R2MPaths.dataDirectory.appendingPathComponent("Chats")
 
     func bind(title: String, source: String) {
-        let digest = SHA256.hash(data: Data((title + "\n" + source).utf8)).map { String(format: "%02x", $0) }.joined()
+        // Frame the title length: joining two arbitrary strings with a newline
+        // makes distinct papers share a history when the title contains one.
+        let identity = "R2M paper v2\n\(title.utf8.count):" + title + source
+        let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         guard digest != key else { return }
         close()
+        unreadableHistoryURL = nil
         self.title = title
         self.source = source
         key = digest
         messages = []
         problem = nil
         context = ""
-        if let bytes = try? Data(contentsOf: library.appendingPathComponent(key + ".json")),
-           let saved = try? JSONDecoder().decode([ChatTurn].self, from: bytes) { messages = saved }
+        let savedURL = library.appendingPathComponent(key + ".json")
+        let legacyDigest = SHA256.hash(data: Data((title + "\n" + source).utf8)).map { String(format: "%02x", $0) }.joined()
+        // Keep earlier conversations readable without deleting or rewriting
+        // their original files. Future saves use the framed identity above.
+        let loadURL = fm.fileExists(atPath: savedURL.path) ? savedURL : library.appendingPathComponent(legacyDigest + ".json")
+        if fm.fileExists(atPath: loadURL.path) {
+            do {
+                messages = try JSONDecoder().decode([ChatTurn].self, from: Data(contentsOf: loadURL))
+            } catch {
+                unreadableHistoryURL = loadURL
+                problem = "The saved conversation could not be read. Its original file has been kept unchanged; you can start a new conversation."
+            }
+        }
     }
     private func save() {
         guard !key.isEmpty else { return }
+        let turns = messages.filter { !$0.content.isEmpty }
+        // An automatic close/rebind must not turn an unreadable history into [].
+        guard unreadableHistoryURL == nil || !turns.isEmpty else { return }
         do {
             try fm.createDirectory(at: library, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try JSONEncoder().encode(messages.filter { !$0.content.isEmpty }).write(to: library.appendingPathComponent(key + ".json"), options: .atomic)
-        } catch { problem = "The conversation could not be saved on this Mac." }
+            let destination = library.appendingPathComponent(key + ".json")
+            if let unreadable = unreadableHistoryURL, unreadable == destination,
+               fm.fileExists(atPath: unreadable.path) {
+                // Preserve the bytes before the first deliberate new conversation
+                // replaces a damaged current-format file. Legacy files stay put.
+                let backup = library.appendingPathComponent(key + ".unreadable-" + UUID().uuidString + ".json")
+                try fm.copyItem(at: unreadable, to: backup)
+            }
+            try JSONEncoder().encode(turns).write(to: destination, options: .atomic)
+            unreadableHistoryURL = nil
+        } catch {
+            problem = unreadableHistoryURL == nil
+                ? "The conversation could not be saved on this Mac."
+                : "The conversation could not be saved. The previous history has been kept unchanged."
+        }
     }
     private func startWorker() throws {
         if worker?.isRunning == true { return }
@@ -87,7 +119,7 @@ final class PaperChat: ObservableObject {
         input = pipe.fileHandleForWriting
     }
     func send(_ question: String, thinking: Bool) {
-        guard !busy, !source.isEmpty else { return }
+        guard !busy, !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let text = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         problem = nil
@@ -252,14 +284,21 @@ struct PaperChatView: View {
                     Button { send() } label: { Label("Send", systemImage: "arrow.up") }
                         .r2mPrimaryAction().tint(R2MTheme.accent).controlSize(.large)
                         .keyboardShortcut(.return, modifiers: [.command])
-                        .disabled(chat.busy || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || studio.draft.text.isEmpty)
+                        .disabled(chat.busy || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || studio.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }.padding(16).r2mControlSurface()
         }
         .r2mAppearance()
         .frame(minWidth: 540, minHeight: 480)
         .onAppear { chat.bind(title: studio.draft.title, source: studio.draft.text) }
-        .onChange(of: studio.draft.text) { chat.bind(title: studio.draft.title, source: studio.draft.text) }
+        .onChange(of: studio.draft.text) {
+            selectedSource = nil
+            chat.bind(title: studio.draft.title, source: studio.draft.text)
+        }
+        .onChange(of: studio.draft.title) {
+            selectedSource = nil
+            chat.bind(title: studio.draft.title, source: studio.draft.text)
+        }
         .onDisappear { chat.close() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in chat.close() }
         .sheet(item: $selectedSource) { source in

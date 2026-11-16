@@ -63,9 +63,19 @@ def classify(candidates, model_dir):
     return result
 
 def reference_entry(s):
-    return bool(re.match(r"^\s*(?:\[\d+\]|\d{1,3}\.\s+[A-Z])",s) or
-                (re.match(r"^[A-ZÀ-Þ]",s) and re.search(YEAR+r"\b",s[:250]) and
-                 re.search(r"[,.;]|\bet al\b",s[:250])))
+    if re.match(r"^\s*(?:\[\d+\]|\d{1,3}\.\s+[A-Z])",s):
+        return True
+    year = re.search(YEAR+r"\b",s[:250])
+    if year is None:
+        return False
+    # A year and a comma anywhere in a paragraph are not enough: prose such as
+    # "In 2024, we repeated the experiment" can follow a reference list too.
+    # Require an author-like prefix and leave uncertain paragraphs untouched.
+    head = s[:year.start()].strip().rstrip(" ([,.:;")
+    if (re.match(r"(?i)^(?:in|since|during|after|before|between|from|by|until)\b",head)
+            or head.casefold() in {"the", "a", "an"}):
+        return False
+    return bool(regex.fullmatch(rf"(?:(?:de|del|der|van|von|da|di|le|la)\s+)*{AUTHOR}",head))
 
 def citation_spans(s, surnames):
     result=[]
@@ -231,7 +241,9 @@ def make_plan(text,title,model_dir,progress,roles=None):
         if m: u['edits'].append(span(0,m.end(),s,"List marker"))
         m=NOTE.match(s)
         if m: u['edits'].append(span(0,m.end(),s,"Footnote marker"))
-        for m in re.finditer(r'(?<=[.!?])([1-9]\d?)(?=\s|$)',s):
+        # A decimal/version suffix (3.1, 2.12) is author text, even when a
+        # footnote with that same number exists elsewhere in the paper.
+        for m in re.finditer(r'(?<!\d[.!?])(?<=[.!?])([1-9]\d?)(?=\s|$)',s):
             if m[1] in note_numbers: u['edits'].append(span(m.start(),m.end(),s,"Footnote marker"))
         for m in re.finditer(r'\u00ad|\u200b|\ufeff',s):
             u['edits'].append(span(m.start(),m.end(),s,"Invisible formatting character"))

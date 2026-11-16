@@ -1,6 +1,6 @@
 R2M (read2me) — local reading app for Apple Silicon Macs
 
-Version 3.1.1 (build 9)
+Version 3.1.2 (build 10)
 
 Requirements
 - Apple Silicon Mac (M1 or later), macOS 14 or later.
@@ -24,6 +24,11 @@ are retained, and unfinished model downloads can resume from the Models window.
 This version uses macOS certificate verification for model downloads, including
 trusted certificates managed by your IT team. It does not disable HTTPS checks
 or require you to install Python or certificates separately.
+
+This update also improves text preservation during PDF cleanup, website imports,
+download cancellation, MP3 filenames and paper-chat context. Unreadable saved
+text or conversations are preserved for recovery before replacement. If saving
+fails, R2M warns you before quitting so you can copy your text somewhere safe.
 
 Models (downloaded separately, no account or API key)
 - Speech: about 330 MB.

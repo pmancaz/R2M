@@ -6,6 +6,11 @@ struct PassageEdit: Codable {
     let reason: String
     let group: String
     let replacement: String
+    func validatedRange(within limit: Int) -> NSRange? {
+        // A malformed saved plan must not overflow Int or crash NSString.
+        guard at >= 0, length > 0, at <= limit, length <= limit - at else { return nil }
+        return NSRange(location: at, length: length)
+    }
 }
 struct Passage: Codable {
     let raw: String
@@ -46,8 +51,9 @@ struct ReadingPlan: Codable {
                 result.append(.init(id: "\(i):label", reason: "Spoken section heading", excerpt: label, group: "cleanup"))
             }
             let raw = u.raw as NSString
-            for (n, edit) in u.edits.enumerated() where edit.at >= 0 && edit.at + edit.length <= raw.length {
-                let excerpt = raw.substring(with: NSRange(location: edit.at, length: edit.length))
+            for (n, edit) in u.edits.enumerated() {
+                guard let range = edit.validatedRange(within: raw.length) else { continue }
+                let excerpt = raw.substring(with: range)
                 result.append(.init(id: "\(i):edit:\(n)", reason: edit.reason, excerpt: excerpt, group: edit.group))
             }
         }
@@ -69,8 +75,8 @@ struct ReadingPlan: Codable {
             let edits = u.edits.enumerated().sorted { $0.element.at > $1.element.at }
             var boundary = text.length
             for (n, edit) in edits where enabled(edit.group, "\(i):edit:\(n)") {
-                guard edit.at >= 0, edit.length > 0, edit.at + edit.length <= boundary else { continue }
-                text.replaceCharacters(in: NSRange(location: edit.at, length: edit.length), with: edit.replacement)
+                guard let range = edit.validatedRange(within: boundary) else { continue }
+                text.replaceCharacters(in: range, with: edit.replacement)
                 boundary = edit.at
             }
             let value = (text as String).trimmingCharacters(in: .whitespacesAndNewlines)

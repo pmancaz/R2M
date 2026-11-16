@@ -90,11 +90,11 @@ def inventory(resources):
 
 def source_snapshot(destination):
     with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-        for name in ('Sources', 'Backend', 'Scripts', 'Resources', 'Tests'):
+        for name in ('Sources', 'Backend', 'Scripts', 'Resources', 'Tests', 'docs'):
             for path in sorted((ROOT/name).rglob('*')):
                 if path.is_file() and '__pycache__' not in path.parts and path.suffix != '.pyc':
                     archive.write(path, 'R2M-source/' + str(path.relative_to(ROOT)))
-        for name in ('README.md', 'LICENSE', '.gitignore'):
+        for name in ('README.md', 'LICENSE', 'CONTRIBUTING.md', 'CHANGELOG.md', '.gitignore'):
             if (ROOT/name).is_file():
                 archive.write(ROOT/name, 'R2M-source/' + name)
 
@@ -184,6 +184,8 @@ def main():
     for path in (ROOT/'Backend').glob('*.py'):
         shutil.copy2(path, resources/path.name)
     shutil.copytree(ROOT/'Resources', resources, dirs_exist_ok=True, ignore=ignore_scratch)
+    if (inputs/'setup-provenance.json').is_file():
+        shutil.copy2(inputs/'setup-provenance.json', resources/'setup-provenance.json')
     (resources/'runtime-packages.json').write_text(json.dumps(inventory(resources), indent=2) + '\n')
     if args.chat_overlay and (args.chat_overlay/'manifest.json').is_file():
         shutil.copy2(args.chat_overlay/'manifest.json', resources/'chat-runtime-provenance.json')
@@ -191,7 +193,7 @@ def main():
     info = {
         'CFBundleName': 'R2M', 'CFBundleDisplayName': 'R2M', 'CFBundleExecutable': 'R2M',
         'CFBundleIdentifier': 'local.r2m.reader', 'CFBundlePackageType': 'APPL',
-        'CFBundleShortVersionString': '3.1.1', 'CFBundleVersion': '9',
+        'CFBundleShortVersionString': '3.1.2', 'CFBundleVersion': '10',
         'CFBundleIconFile': 'R2M.icns', 'LSMinimumSystemVersion': '14.0',
         'R2MChatMinimumSystemVersion': args.chat_minimum,
         'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication',

@@ -86,21 +86,32 @@ def read_link(value, progress):
     url = value.strip()
     if "://" not in url:
         url = "https://" + url
-    parts = urlsplit(url)
-    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
+    try:
+        parts = urlsplit(url)
+        valid = parts.scheme in {"http", "https"} and parts.hostname and parts.username is None and parts.password is None
+        _ = parts.port
+    except ValueError:
+        valid = False
+    if not valid:
         raise ValueError("Enter an http or https link to an article.")
     progress("Opening the link…")
     try:
-        with requests.get(url, timeout=(8, 22), stream=True,
-                          headers={"User-Agent": "Mozilla/5.0 (Macintosh) KokoroReader/1.0"}) as response:
+        with website_session() as session, session.get(url, timeout=(8, 22), stream=True,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh) R2M/1.0"}) as response:
             response.raise_for_status()
             content = bytearray()
             for chunk in response.iter_content(65536):
                 content.extend(chunk)
                 if len(content) > 40 * 1024**2:
                     raise ValueError("This download exceeds 40 MB. For a PDF, save it and use Import PDF.")
+            from email.message import Message
+            content_type = Message()
+            content_type["Content-Type"] = response.headers.get("Content-Type", "")
             mime = response.headers.get("Content-Type", "").split(";")[0].lower().strip()
+            charset = content_type.get_content_charset() or "utf-8-sig"
             final = response.url
+    except requests.exceptions.SSLError as exc:
+        raise ValueError("Could not verify the website's secure connection. If you use a workplace network or VPN, ask IT to check its trusted certificates, or try another network.") from exc
     except requests.RequestException as exc:
         code = getattr(getattr(exc, "response", None), "status_code", None)
         if code in {401, 403, 429}:
@@ -114,7 +125,10 @@ def read_link(value, progress):
         raise ValueError("This link did not return an article or PDF.")
     progress("Extracting the article…")
     if mime == "text/plain":
-        body = data.decode("utf-8-sig", errors="replace").strip()
+        try:
+            body = data.decode(charset).strip()
+        except (LookupError, UnicodeError) as exc:
+            raise ValueError("This page's text encoding could not be read. Try copying the text from your browser.") from exc
         title = None
     else:
         article = trafilatura.bare_extraction(data, url=final, with_metadata=True, favor_recall=True, include_comments=False, include_tables=False)
@@ -123,6 +137,48 @@ def read_link(value, progress):
     if not body:
         raise ValueError("No article text was found. Pages that need a login or JavaScript may need to be pasted from your browser.")
     return dict(text=body, title=title or urlsplit(final).hostname, note=urlsplit(final).hostname)
+
+
+def website_session():
+    """Use the same native certificate checks as model setup, without global patches."""
+    import requests
+    if sys.platform != "darwin":
+        return requests.Session()
+    from asset_manager import verified_tls_context
+    context = verified_tls_context()
+
+    class NativeHTTPSAdapter(requests.adapters.HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            kwargs["ssl_context"] = context
+            return super().init_poolmanager(*args, **kwargs)
+
+        def proxy_manager_for(self, proxy, **kwargs):
+            kwargs["ssl_context"] = context
+            if proxy.lower().startswith("https://"):
+                kwargs["proxy_ssl_context"] = context
+            return super().proxy_manager_for(proxy, **kwargs)
+
+        def build_connection_pool_key_attributes(self, request, verify, cert=None):
+            host, pool = super().build_connection_pool_key_attributes(request, verify, cert)
+            pool["ssl_context"] = context
+            pool["cert_reqs"] = "CERT_REQUIRED"
+            pool.pop("ca_certs", None)
+            pool.pop("ca_cert_dir", None)
+            return host, pool
+
+        def cert_verify(self, conn, url, verify, cert):
+            # Requests otherwise adds certifi anchors, bypassing macOS distrust
+            # settings and still missing certificates managed in Keychain.
+            conn.cert_reqs = "CERT_REQUIRED"
+            conn.ca_certs = None
+            conn.ca_cert_dir = None
+            if cert:
+                certificate, key = cert if isinstance(cert, tuple) else (cert, None)
+                context.load_cert_chain(certificate, key)
+
+    session = requests.Session()
+    session.mount("https://", NativeHTTPSAdapter())
+    return session
 
 
 def speak(data, folder, progress):

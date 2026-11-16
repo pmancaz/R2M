@@ -36,6 +36,7 @@ final class LocalModels: ObservableObject {
     @Published var selected: Set<String> = ["speech", "cleanup"]
     @Published var prompt: ModelPrompt?
     @Published private(set) var busy = false
+    @Published private(set) var cancelling = false
     @Published private(set) var progress = 0.0
     @Published private(set) var status = ""
     @Published private(set) var downloaded: Int64 = 0
@@ -125,6 +126,11 @@ final class LocalModels: ObservableObject {
             process.terminationHandler = { [weak self] process in
                 DispatchQueue.main.async {
                     guard let self, self.task === process else { return }
+                    if self.cancelling {
+                        self.status = "Download paused. Retry to resume it."
+                        self.finish()
+                        return
+                    }
                     self.poll()
                     if self.busy {
                         self.problem = "The download stopped before it finished. You can retry to resume it."
@@ -132,7 +138,7 @@ final class LocalModels: ObservableObject {
                     }
                 }
             }
-            problem = nil; progress = 0; downloaded = 0; total = pendingBytes
+            problem = nil; cancelling = false; progress = 0; downloaded = 0; total = pendingBytes
             status = "Preparing downloads…"; job = folder; task = process; busy = true
             try process.run(); try? log.close()
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.poll() }
@@ -146,6 +152,7 @@ final class LocalModels: ObservableObject {
         return (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
     }
     private func poll() {
+        guard !cancelling else { return }
         if let value = read("progress.json") {
             status = value["message"] as? String ?? status
             if let f = value["fraction"] as? Double, f.isFinite { progress = min(1, max(progress, f)) }
@@ -160,17 +167,24 @@ final class LocalModels: ObservableObject {
         finish()
     }
     private func finish() {
-        timer?.invalidate(); timer = nil; task = nil; busy = false
+        timer?.invalidate(); timer = nil; task = nil; busy = false; cancelling = false
         if let job { try? FileManager.default.removeItem(at: job) }
         job = nil
         refresh()
     }
     func cancel() {
-        let process = task
-        task = nil
-        if process?.isRunning == true { process?.terminate() }
-        status = "Download paused. Retry to resume it."
-        finish()
+        guard busy, !cancelling, let process = task else { return }
+        if process.isRunning {
+            cancelling = true
+            status = "Pausing download…"
+            timer?.invalidate(); timer = nil
+            // Keep the worker, job directory and busy state until termination.
+            // It must release the install lock before another download starts.
+            process.terminate()
+        } else {
+            poll()
+            if busy { status = "Download paused. Retry to resume it."; finish() }
+        }
     }
 }
 
@@ -226,7 +240,8 @@ struct ModelSetupView: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             HStack {
                 if models.busy {
-                    Button("Cancel download") { models.cancel() }
+                    Button(models.cancelling ? "Pausing…" : "Cancel download") { models.cancel() }
+                        .disabled(models.cancelling)
                 } else {
                     Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
                 }

@@ -4,3 +4,11 @@ outputs/
 __pycache__/
 *.pyc
 dist/
+.env
+.env.*
+*.pem
+*.key
+*.safetensors
+*.pth
+*.pt
+*.onnx

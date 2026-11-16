@@ -1,5 +1,12 @@
 # R2M third-party components
 
+The R2M application source is copyright Pat Carroll and is licensed under
+AGPL-3.0-only; see the repository's `LICENSE`. The public repository is a source
+release. Runtime binaries and neural model weights are obtained from upstream
+by the local setup script and the app, respectively, rather than hosted here.
+The short WAV voice previews are synthetic speech from Kokoro, generated using
+the project-specific sentence documented in `previews/README.md`.
+
 R2M includes independent open-source runtime components and their license notices.
 The installed application is self-contained; downloadable neural model weights
 are stored separately. `runtime-packages.json` lists the exact bundled Python
@@ -12,6 +19,8 @@ files remain inside each package and `.dist-info` directory.
   notices at `runtime/lib/python3.11/LICENSE.txt`. Source: https://www.python.org/downloads/source/
   The relocatable Python distribution is based on python-build-standalone:
   https://github.com/astral-sh/python-build-standalone
+  Public source builds obtain managed CPython 3.11 with uv and record the chosen
+  patch version in `setup-provenance.json`. Source: https://github.com/astral-sh/uv
 - **Kokoro 0.9.4 and Misaki 0.9.4**: Apache-2.0. Package licenses are retained in
   the runtime metadata. Source: https://github.com/hexgrad/kokoro and
   https://github.com/hexgrad/misaki

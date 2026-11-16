@@ -1,87 +1,93 @@
-# R2M
+# Read To Me (R2M)
 
-R2M (“read2me”) is a native macOS app for local speech, article import and paper chat. It uses SwiftUI/AppKit and supports Apple Silicon Macs running macOS 14 or later. The interface follows the system appearance, with selective material surfaces and accessible native controls.
+A local macOS app for turning papers and articles into narration to listen to while out and about.
 
-## Use the staff build
+I built Read To Me because I wanted to take some of my reading with me. There are papers and articles I want to spend time with, but I don't always want to spend that time in front of a screen. Being able to export a narration and listen to it elsewhere seemed like a fairly useful thing to have.
 
-Unzip `outputs/R2M-staff.zip` and copy `R2M.app` to Applications. The app includes its Python runtime, libraries, FFmpeg and voice previews. It runs independently: no Python, Homebrew, Kokoro installation, account or API key is required on the recipient's Mac.
+I also wanted to do this with models running on my own computer. Building the app became a practical way of learning more about AI-assisted programming: installing local models, understanding what each one does, and putting open-source components together into a workflow I could actually use.
 
-To update an existing installation, quit R2M and replace the app in Applications with the new copy. Your downloaded models, partially completed downloads, saved reading and chat data remain in Application Support; there is no need to remove them. In version 3.1.1, model downloads use macOS certificate verification, including trusted certificates managed by your IT team, rather than depending on Python's static certificate bundle. Certificate and hostname verification remain enabled.
+This is a personal project, and I'm sharing it because I find it useful. It isn't a commercial venture. I'm still developing my skills and the app along with them, so there will be rough edges.
 
-The staff archive is **ad-hoc signed, not Developer ID signed or Apple notarized**. If macOS blocks the test build, the recipient must use Finder's Open action or the system's Privacy & Security Open Anyway control themselves. R2M does not remove quarantine attributes or change security settings. Developer ID signing and notarization remain release work.
+[Project page](https://pcarroll.au/tools/read-to-me/) · [Installation](#installation) · [Models and acknowledgements](#models-and-acknowledgements) · [Report a problem](https://github.com/pmancaz/R2M/issues)
 
-Open the Models window in R2M to install only the model sets you need:
+## What it does
 
-| Model set | Download | Purpose |
-| --- | ---: | --- |
-| Speech | 329,838,060 bytes (about 330 MB) | Kokoro narration with the bundled voices |
-| PDF cleanup | 878,857,388 bytes (about 879 MB), optional | Classify publisher boilerplate in imported papers |
-| Paper chat | 5,977,073,021 bytes (about 5.98 GB), optional | Qwen3.5-9B MLX 4-bit questions and answers |
+- Imports searchable PDFs, website articles or pasted text.
+- Prepares a listening copy of a paper, with controls for boilerplate, citations and references. You can review the changes and restore text.
+- Generates narration with five English Kokoro voices and an adjustable reading speed.
+- Plays the narration locally and exports a 192 kbps MP3.
+- Optionally lets you ask a local language model questions about a paper, with links back to the passages used in its answer.
 
-The app downloads pinned public files from Hugging Face without an API token and verifies them against `Resources/models.json`. Model cards and license references accompany each set. Models live in `~/Library/Application Support/R2M/Models`; saved reading/chat data live alongside them under `~/Library/Application Support/R2M`. Narration and model inference run locally after installation. Importing a website and downloading models require network access.
+The app uses SwiftUI/AppKit for its interface and Python workers for extraction, model inference and audio processing. It supports **Apple Silicon Macs with macOS 14 or later**. Windows, Linux and Intel Macs are not supported by this build. Testing has been on a newer Apple Silicon Mac; macOS 14 is the deployment target, rather than a claim of testing on every supported system.
 
-Import a PDF or website, choose a voice and speed, then generate speech. Preview buttons let you compare voices. MP3 export is fixed at 192 kbps and can use a remembered folder. Open PDF / Open website reopens the source location saved after a successful import. Older drafts still load; reimporting enables source opening if no original location was previously saved. Paper chat can show the passages cited in its replies.
+## The pipeline
 
-## Build
+A PDF contains rather more than the words I want to hear. Page numbers, repeated headers, publisher notices and long reference lists all make sense on a page, but can get in the way when read aloud.
 
-Build on an Apple Silicon Mac with the macOS SDK and Swift command-line tools installed:
+Read To Me extracts the text, then uses formatting rules and an optional DeBERTa classifier to identify material to leave out. It builds a reversible listening plan so I can inspect what changed. This step preserves the author's wording; the classifier scores passages rather than writing new prose. Website extraction uses Trafilatura to separate article text from the surrounding page, while PDF cleanup controls apply to imported papers.
 
-```sh
-python3 Scripts/build.py --zip
-```
+The resulting text goes to Kokoro, which produces the speech locally. FFmpeg normalises the audio's loudness and encodes the exported MP3. The optional Qwen paper-chat model is a separate part of the app; it doesn't rewrite the text used for narration.
 
-The build produces `outputs/R2M.app`, `outputs/R2M-staff.zip` and its SHA256 file. The staff ZIP also contains a source snapshot and instructions. The app does not include the large downloadable model sets or any user's documents, recordings or chat history.
+While developing this, I tried WAV exports and MP3s at 320 kbps, then 256 kbps, before settling on the current 192 kbps. For this generated speech, I couldn't hear a useful difference that justified the larger files. That was a listening decision for my own use, rather than a controlled comparison or a claim about all audio. The app still uses WAV internally while generating and processing speech.
 
-For this checkout, the build reads already prepared runtime inputs from `/Applications/Kokoro.app/Contents/Resources`. This is a **build-time source only**, not a dependency of the finished app. To use another prepared runtime directory:
+## Installation
 
-```sh
-python3 Scripts/build.py --runtime-source /path/to/runtime-inputs --zip
-```
+This is a **source release**. The repository contains the app code, small voice previews and build instructions. It does not contain model weights, a prebuilt app or the bundled Python runtime. The setup script downloads runtime dependencies from their upstream sources; models are downloaded separately through the app.
 
-That directory must contain `runtime/` (relocatable Python 3.11 and speech/PDF packages), `chat-packages/` (MLX-LM and tokenizer dependencies), `bin/`, `previews/` and `Kokoro.icns` (or `R2M.icns`). An existing R2M app's `Contents/Resources` directory can itself supply these inputs, so recipients can rebuild from the included source and app without installing Kokoro. The build copies these assets into the app, retains package metadata and license notices, overlays the official macOS 14 MLX wheels pinned in `Resources/chat-runtime.json`, and compiles the Swift sources with the macOS 14 arm64 deployment target. It also installs the small pure-Python `truststore` wheel pinned in `Resources/network-runtime.json` into the main runtime, and checks that the isolated download worker can import it and create a verifying TLS context. All wheel downloads are verified against pinned SHA256 digests. Large runtime assets and weights are excluded from Git.
-
-The builder omits unused Tkinter/IDLE (their Tcl/Tk runtime is not included), removes unused eSpeak CI build-machine RPATHs from bundle copies, checks for external symlinks and native-library paths, and ad-hoc signs the copied native binaries and the app. The installed build inputs are never modified.
-
-After source or backend changes, reuse the already bundled runtime with `python3 Scripts/build.py --refresh --zip`.
-
-For an isolated development preview after building the standalone app:
+You'll need an Apple Silicon Mac, several GB of free space for the runtime/build, Apple's Command Line Tools and [uv](https://docs.astral.sh/uv/getting-started/installation/). If you use Homebrew, `brew install uv` installs uv. Apple's tools can be installed with `xcode-select --install`.
 
 ```sh
-python3 Scripts/preview.py
-open 'work/polish/R2M.app'
+git clone https://github.com/pmancaz/R2M.git
+cd R2M
+python3 Scripts/setup_runtime.py
+python3 Scripts/build.py --runtime-source work/runtime-inputs
+open outputs/R2M.app
 ```
 
-The preview keeps the existing development defaults domain (`local.narrator.polish-preview`), isolates draft/chat state under `work/polish/data`, and reuses the standalone build's runtime via relative development-only links. It copies current backend workers and resources from this checkout.
+When the build finishes, copy `outputs/R2M.app` to Applications if you'd like to keep it there. The finished app includes its runtime, so it doesn't depend on the checkout or a separate Python installation. You can delete the build folders after copying the app.
 
-## Source layout
+The local build is ad-hoc signed, **not Developer ID signed or Apple notarised**. If macOS blocks it, use the system's supported Open/Open Anyway controls after reviewing the source. The scripts don't remove quarantine or change security settings.
 
-- `Sources/`: native reader, models setup, source opening, paper chat and app appearance.
-- `Backend/`: model installer, speech/extraction, PDF cleanup, loudness normalization and local chat workers.
-- `Resources/models.json`: pinned model downloads, sizes, digests and license references.
-- `Resources/chat-runtime.json`: verified macOS 14 MLX runtime wheel inputs.
-- `Resources/network-runtime.json`: verified native certificate-verification runtime wheel input.
-- `Resources/THIRD_PARTY_NOTICES.md` and `Resources/Licenses/`: runtime notices and source references.
-- `Scripts/`: standalone app and development-preview builders.
-- `Tests/`: focused source-location regression checks.
-
-`R2M_DATA_DIR` and `R2M_MODEL_DIR` override app storage locations for isolated local testing. Backend-only model-manifest overrides are intended for downloader tests.
-
-## Notices and source
-
-The app bundles open-source packages with their original notices, including GPLv3 FFmpeg/eSpeak NG and AGPLv3 PyMuPDF/MuPDF. See `Resources/THIRD_PARTY_NOTICES.md`, retained runtime package licenses, and the generated `runtime-packages.json` inventory. Source locations and build references are recorded there; retain them and `R2M-source.zip` when sharing the test build. Free/internal use does not change those component license terms.
-
-## Verification
-
-The standalone staff app was tested from a relocated recipient copy with no dependency on the original installation. First-run model setup, speech-model download cancellation/resume, narration/playback, 192 kbps MP3 export, PDF import and cleanup passed. The paper-chat reasoning cutoff now uses a separate final-answer generation if its private reasoning budget is exhausted; real 9B-model QA and six regression checks passed without exposing planning notes.
-
-The UI was checked at normal 850 × 660 and compact sizes, in light/dark appearances and with the opaque accessibility fallback. Existing import, reference switches, change review, voice preview, narration, playback, 192 kbps MP3 export, chat replies and passage sheets were exercised. Source-opening checks covered exact URLs with query/fragment, local PDFs, undo and persistence across restart.
-
-The packaged MLX 0.32.4 macOS 14 wheels were verified by SHA256 and inspected for macOS 14 native deployment targets. A GPU matrix multiplication and MLX-LM/Qwen3.5 model imports passed using the isolated replacement runtime. The app was built with SDK 26.5 and a macOS 14 deployment target; an older macOS machine has not been used for runtime QA.
-
-Run the source-location regression checks with:
+**SDK note:** the current Command Line Tools macOS 27.2 SDK on my Mac lacks a SwiftUI macro plugin. The build and native tests pass with the installed 26.5 SDK. If you encounter the same `SwiftUIMacros.StateMacro` error and have that SDK installed, use:
 
 ```sh
-mkdir -p work/tests
-xcrun swiftc -swift-version 5 -target arm64-apple-macos14.0 Sources/Draft.swift Sources/SourceLocation.swift Sources/Listening.swift Tests/SourceLocationTests.swift -o work/tests/source-location-tests
-work/tests/source-location-tests
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk \
+  python3 Scripts/build.py --runtime-source work/runtime-inputs
 ```
+
+See [the build notes](docs/BUILDING.md) for runtime details, rebuilding and verification.
+
+### First launch
+
+1. Open **Models** and download **Speech** (about 330 MB). Downloads come directly from the pinned Hugging Face repositories and are checked against SHA256 digests.
+2. Optionally download **Enhanced PDF cleanup** (about 879 MB) and **Paper chat** (about 5.98 GB). Neither is required for basic narration. Paper chat also needs substantially more memory; download size isn't a RAM requirement.
+3. Import a searchable PDF or website, or paste some text. Review a paper's listening copy, choose a voice and speed, then generate speech.
+4. Listen in the app or use **Export MP3** to save the narration for another device.
+
+No account or API key is needed. Internet access is needed for setup, model downloads and fetching website articles. After installation, narration, PDF cleanup and paper chat run locally. The app does not send imported text to a hosted AI service.
+
+Models live in `~/Library/Application Support/R2M/Models`. Drafts and chat history are stored alongside them under `~/Library/Application Support/R2M`. Replacing the app preserves this data. Your own file-sync or backup software may separately sync folders you save into.
+
+## Models and acknowledgements
+
+These projects made the app possible. I built the interface and the workflow around their work; I didn't train the models.
+
+| Role | Upstream model | Licence |
+| --- | --- | --- |
+| Narration | [Kokoro-82M, by hexgrad](https://huggingface.co/hexgrad/Kokoro-82M) | Apache-2.0 |
+| Optional boilerplate classification | [DeBERTa-v3-large-zeroshot-v2.0, by Moritz Laurer](https://huggingface.co/MoritzLaurer/deberta-v3-large-zeroshot-v2.0) | MIT |
+| Optional paper chat | [Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B), using [the MLX Community 4-bit conversion](https://huggingface.co/mlx-community/Qwen3.5-9B-MLX-4bit) | Apache-2.0 |
+
+The exact revisions, download URLs, sizes and checksums are recorded in [Resources/models.json](Resources/models.json). The app downloads the relevant model cards as well as the files it needs. Model weights remain with their original hosts and licences.
+
+Thanks also to the people behind [Kokoro and Misaki](https://github.com/hexgrad/kokoro), [PyTorch](https://github.com/pytorch/pytorch), [MLX](https://github.com/ml-explore/mlx), [MLX-LM](https://github.com/ml-explore/mlx-lm), [Trafilatura](https://github.com/adbar/trafilatura), [PyMuPDF/MuPDF](https://github.com/pymupdf/PyMuPDF), [FFmpeg](https://ffmpeg.org/), [eSpeak NG](https://github.com/espeak-ng/espeak-ng), [spaCy](https://spacy.io/), [truststore](https://github.com/sethmlarson/truststore), Python and the other dependencies.
+
+## Limitations and contributions
+
+PDFs with unusual columns or layouts can still extract in the wrong order. Scanned PDFs need OCR before import. Some websites restrict automated access or need JavaScript; in those cases, paste the text instead. Cleanup and paper-chat answers can make mistakes, so check the source when it matters.
+
+If something breaks, [open an issue](https://github.com/pmancaz/R2M/issues) with your macOS version, Mac model and what happened. Please use a short example you can share publicly rather than uploading a private paper or your reading history. Suggestions and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). This is maintained around my own use, so I can't promise a support schedule.
+
+## Licence
+
+The R2M application source is available under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). Dependencies and model weights retain their own licences, including Apache-2.0, MIT, GPLv3 and AGPLv3. See [the third-party notices](Resources/THIRD_PARTY_NOTICES.md) for credits and source references. The setup script downloads dependencies for a local build; this repository doesn't redistribute their large binaries or model weights.

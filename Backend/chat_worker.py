@@ -65,8 +65,13 @@ def select_passages(blocks, query, tokenizer, budget=16000):
             idf = math.log(1+(len(blocks)-frequencies[w]+0.5)/(frequencies[w]+0.5))
             score += idf * tf * 2.5 / (tf+1.5*(0.25+0.75*len(terms)/max(1, average)))
         scores.append((score, i))
-    ranked = [i for _,i in sorted(scores, reverse=True)]
-    priority = list(range(min(5,len(blocks))))
+    ranked_scores = sorted(scores, reverse=True)
+    ranked = [i for _, i in ranked_scores]
+    # Do not spend the entire budget on a long introduction or conclusion before
+    # considering the question. A directly matching later passage must get its
+    # place first; opening/section anchors and neighbours fill the remaining room.
+    priority = [i for score, i in ranked_scores if score > 0]
+    priority.extend(range(min(5,len(blocks))))
     for index, block in enumerate(blocks):
         if re.match(r"(?i)^(?:\d+[.)]?\s+)?(?:abstract|conclusion|discussion|summary)\b", block):
             priority.extend(range(index, min(index+3, len(blocks))))
@@ -77,6 +82,8 @@ def select_passages(blocks, query, tokenizer, budget=16000):
         if i in picked: continue
         if used + lengths[i] <= budget:
             picked.add(i); used += lengths[i]
+    if not picked:
+        raise ValueError("A passage is too large for the local chat context. Split the text into shorter paragraphs and try again.")
     return sorted(picked), "Relevant passages from a long document"
 
 

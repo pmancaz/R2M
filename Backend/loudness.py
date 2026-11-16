@@ -30,8 +30,11 @@ def run(arguments, report=None, duration=0):
                 for line in ACTIVE.stdout:
                     key, _, value = line.strip().partition("=")
                     if key == "out_time_us" and duration > 0:
-                        try: report(min(1.0, max(0.0, int(value) / (duration * 1_000_000))))
-                        except ValueError: pass
+                        try:
+                            fraction = min(1.0, max(0.0, int(value) / (duration * 1_000_000)))
+                        except ValueError:
+                            continue
+                        report(fraction)
             ACTIVE.wait()
             error_log.seek(0)
             log = error_log.read().decode(errors="replace")
@@ -39,6 +42,14 @@ def run(arguments, report=None, duration=0):
                 raise ValueError("Audio processing failed. " + log[-1000:])
             return log
     finally:
+        # Progress reporting can fail (for example if a job folder is removed or
+        # its disk fills). Do not leave an encoder running after its worker exits.
+        if ACTIVE is not None:
+            if ACTIVE.poll() is None:
+                ACTIVE.kill()
+            ACTIVE.wait(timeout=5)
+            if ACTIVE.stdout is not None:
+                ACTIVE.stdout.close()
         ACTIVE = None
         signal.signal(signal.SIGTERM, previous)
 
